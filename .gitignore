@@ -1,0 +1,13 @@
+李玲
+.claude
+.vscode
+CLAUDE.md
+hearing/conference
+hearing/ica*
+hearing/*.basedata
+hearing/*.mat
+vision/conference
+vision/ica*
+vision/*.basedata
+vision/*.mat
+touch/batch*
