@@ -9,7 +9,7 @@ from mne import find_events, Epochs
 # %% 设置参数
 data_dir = "batch_preprocessing_results"
 reject_criteria = dict(mag=10e-12)
-tmin, tmax = -0.1, 0.2
+tmin, tmax = -0.1, 1
 baseline = (-0.1, 0)
 
 # 输出目录（将所有保存的文件放到此目录）
@@ -150,7 +150,7 @@ for i in range(len(available_evokeds)):
 # 如果不需要子集处理，可以将 selected_subjs 设为 None 或空列表。
 # ------------------------------------------------------------------
 original_filenames = filenames.copy()
-selected_subjs = [ 1, 3, 4, 5]  # 1-based indices of subjects to keep
+selected_subjs = [1]  # 1-based indices of subjects to keep
 if selected_subjs:
     # 转换为 0-based 索引并筛选出存在的索引
     selected_idx = [s - 1 for s in selected_subjs if (s - 1) < len(filenames)]

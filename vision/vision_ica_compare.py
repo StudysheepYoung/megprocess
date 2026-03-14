@@ -23,8 +23,8 @@ REJECT       = dict(mag=3e-9)
 N_COMPONENTS = 15
 RANDOM_STATE = 42
 
-# METHODS = ['fastica', 'infomax', 'picard', 'jade', 'sobi', 'amuse']
-METHODS = ['jade', 'sobi', 'amuse']
+METHODS = ['fastica', 'infomax', 'picard', 'jade', 'sobi', 'amuse']
+
 
 # %% 辅助函数
 def read_meg_data(data_path, sensor_path):
@@ -87,7 +87,7 @@ def build_epochs_and_evoked(raw, tmin, tmax, baseline, reject):
     return epochs, epochs.average()
 
 
-def compute_snr_from_evoked(evoked, sig_tmin=0.0, sig_tmax=0.6, noise_tmin=-0.1, noise_tmax=0.0):
+def compute_snr_from_evoked(evoked, sig_tmin=0.2, sig_tmax=0.4, noise_tmin=-0.1, noise_tmax=0.0):
     picks = mne.pick_types(evoked.info, meg=True, exclude='bads')
     data = evoked.data[picks]
     times = evoked.times
@@ -260,15 +260,12 @@ def build_ica_from_jade(raw_fit, picks, n_comp):
 raw = read_meg_data(DATA_PATH, SENSOR_PATH)
 
 raw_before = raw.copy()
-raw_before.filter(1.5, 40.0, picks='meg', verbose=False)
+raw_before.filter(1.0, 40.0, picks='meg', verbose=False)
 _, evoked_before = build_epochs_and_evoked(raw_before, TMIN, TMAX, BASELINE, REJECT)
 snr_lin_before, snr_db_before, noise_rms_before = compute_snr_from_evoked(evoked_before)
 print(f"SNR before: {snr_lin_before:.4f} ({snr_db_before:.2f} dB)\n")
 
-# 用于 ICA 拟合的宽带副本（三种方法共用）
-raw_ica_fit = raw.copy()
-raw_ica_fit.filter(1.0, 40.0, picks='meg', verbose=False)
-picks_mag = mne.pick_types(raw_ica_fit.info, meg=True, exclude='bads')
+picks_mag = mne.pick_types(raw_before.info, meg=True, exclude='bads')
 n_comp = min(N_COMPONENTS, len(picks_mag) - 1)
 
 
@@ -280,19 +277,19 @@ for method in METHODS:
     print(f"=== {method.upper()} ===")
     if method == 'jade':
         try:
-            ica = build_ica_from_jade(raw_ica_fit, picks_mag, n_comp)
+            ica = build_ica_from_jade(raw_before, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
     elif method == 'sobi':
         try:
-            ica = build_ica_from_sobi(raw_ica_fit, picks_mag, n_comp)
+            ica = build_ica_from_sobi(raw_before, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
     elif method == 'amuse':
         try:
-            ica = build_ica_from_amuse(raw_ica_fit, picks_mag, n_comp)
+            ica = build_ica_from_amuse(raw_before, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
@@ -301,7 +298,7 @@ for method in METHODS:
         ica = ICA(n_components=n_comp, method=method,
                   fit_params=fit_params, random_state=RANDOM_STATE, verbose=False)
         try:
-            ica.fit(raw_ica_fit, picks=picks_mag, verbose=False)
+            ica.fit(raw_before, picks=picks_mag, verbose=False)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
@@ -310,7 +307,7 @@ for method in METHODS:
     matplotlib.use('TkAgg')
     ica.plot_components(picks=range(n_comp), show=True)
     plt.show(block=True)
-    ica.plot_sources(raw_ica_fit, show=True, block=True)
+    ica.plot_sources(raw_before, show=True, block=True)
     exclude = ica.exclude[:]
     matplotlib.use('Agg')
     print(f"  排除成分: {exclude}")
@@ -326,7 +323,7 @@ for method in METHODS:
     results[method] = dict(snr_lin=snr_lin, snr_db=snr_db,
                            delta_snr_db=snr_db - snr_db_before,
                            sf_linear=sf_linear, sf_db=sf_db,
-                           n_excluded=len(exclude))
+                           n_excluded=len(exclude), excluded_components=exclude)
     evokeds[method] = evoked_after
 
 

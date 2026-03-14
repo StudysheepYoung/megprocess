@@ -3,91 +3,39 @@ import matplotlib
 matplotlib.use('Agg')
 
 import os
+import glob
 import json
 import numpy as np
 import mne
-import scipy.io as scio
 from mne import find_events, Epochs
 from mne.preprocessing import ICA
 import matplotlib.pyplot as plt
 
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH    = os.path.join(SCRIPT_DIR, "20241214 105123.basedata")
-SENSOR_PATH  = os.path.join(SCRIPT_DIR, "sensors_mecg64.mat")
+DATA_DIR     = os.path.join(SCRIPT_DIR, "batch_preprocessing_results")
 OUTPUT_DIR   = os.path.join(SCRIPT_DIR, "ica_compare_results")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-TMIN, TMAX   = -0.1, 0.4
+TMIN, TMAX   = -0.1, 0.6
 BASELINE     = (-0.1, 0)
-REJECT       = dict(mag=3e-9)
+REJECT       = dict(mag=10e-12)
+EVENT_ID     = 1000000000
 N_COMPONENTS = 15
 RANDOM_STATE = 42
 
 METHODS = ['fastica', 'infomax', 'picard', 'jade', 'sobi', 'amuse']
-# METHODS = ['jade', 'sobi', 'amuse']
+
 
 # %% 辅助函数
-def read_meg_data(data_path, sensor_path):
-    fs = 1000
-    n_record_chans = 66
-    file_id = open(data_path, "rb")
-    baseDate_data_0 = np.fromfile(file_id, dtype=np.float32)
-    baseDate_data = baseDate_data_0[512:]
-    General_Time_In_Seconds = len(baseDate_data) // n_record_chans // fs
-    Single_Sensor_Data_Length = General_Time_In_Seconds * fs
-    file_id.close()
-    read_raw_data = np.zeros((n_record_chans, Single_Sensor_Data_Length))
-    for channel_index in range(n_record_chans):
-        for time_seconds in range(General_Time_In_Seconds):
-            read_raw_data[channel_index, time_seconds * fs:(time_seconds + 1) * fs] = \
-                baseDate_data[channel_index * fs + (time_seconds * n_record_chans * fs):
-                              (channel_index + 1) * fs + (time_seconds * n_record_chans * fs)]
-
-    use_chans = 65
-    raw_data = read_raw_data[:use_chans, :]
-    raw_data[:-1, :] = raw_data[:-1, :] * 1e-12
-
-    num_chans_data = 64
-    sensor_info = scio.loadmat(sensor_path)
-    label = list(sensor_info['ch_names'])
-    label = [lab.strip() for lab in label]
-    pos = sensor_info['pos']
-    ori = sensor_info['ori']
-
-    raw_info = mne.create_info(
-        ch_names=label + ['Trigger'],
-        ch_types=['eeg' for _ in range(64)] + ['stim'],
-        sfreq=1000)
-
-    raw = mne.io.RawArray(raw_data, raw_info)
-    dic = {label[i]: pos[i, :] for i in range(num_chans_data)}
-    montage = mne.channels.make_dig_montage(ch_pos=dic, coord_frame='head')
-    raw = raw.set_montage(montage)
-
-    for j, ch_name in enumerate(raw.info['ch_names']):
-        if ch_name != 'Trigger':
-            raw.info['chs'][j]['kind'] = mne.io.constants.FIFF.FIFFV_MEG_CH
-            raw.info['chs'][j]['unit'] = mne.io.constants.FIFF.FIFF_UNIT_T
-            raw.info['chs'][j]['coil_type'] = mne.io.constants.FIFF.FIFFV_COIL_QUSPIN_ZFOPM_MAG2
-            raw.info['chs'][j]['loc'][3:12] = np.array([1., 0., 0., 0., 1., 0., 0., 0., 1.])
-            Z_orient = mne._fiff.tag._loc_to_coil_trans(raw.info['chs'][j]['loc'])[:3, :3]
-            find_Rotation = mne.transforms._find_vector_rotation(Z_orient[:, 2], ori[j, :])
-            raw.info['chs'][j]['loc'][3:12] = np.dot(find_Rotation, Z_orient).T.ravel()
-
-    return raw
-
-
 def build_epochs_and_evoked(raw, tmin, tmax, baseline, reject):
     events = find_events(raw, stim_channel='Trigger', verbose=False)
-    events[:, 0] += 400
-    event_id = int(np.unique(events[:, 2])[0])
-    epochs = Epochs(raw, events, event_id, tmin=tmin, tmax=tmax,
+    epochs = Epochs(raw, events, EVENT_ID, tmin=tmin, tmax=tmax,
                     baseline=baseline, detrend=1, reject=reject,
                     preload=True, verbose=False)
     return epochs, epochs.average()
 
 
-def compute_snr_from_evoked(evoked, sig_tmin=0.0, sig_tmax=0.2, noise_tmin=-0.1, noise_tmax=0.0):
+def compute_snr_from_evoked(evoked, sig_tmin=0.0, sig_tmax=0.1, noise_tmin=-0.1, noise_tmax=0.0):
     picks = mne.pick_types(evoked.info, meg=True, exclude='bads')
     data = evoked.data[picks]
     times = evoked.times
@@ -103,32 +51,27 @@ def compute_snr_from_evoked(evoked, sig_tmin=0.0, sig_tmax=0.2, noise_tmin=-0.1,
 
 
 def amuse_numpy(X, n_comp, lag=1):
-    """AMUSE ICA，用单时延协方差特征分解，返回 (V, vecs_sub, D, S)，X: (n_chan, n_times)"""
     from scipy.linalg import eigh
     _, T = X.shape
-    # 白化
     cov = X @ X.T / T
     vals, vecs = eigh(cov)
     idx = np.argsort(vals)[::-1][:n_comp]
     D = np.diag(1.0 / np.sqrt(vals[idx]))
     vecs_sub = vecs[:, idx]
-    W_white = D @ vecs_sub.T          # (n_comp, n_chan)
-    Z = W_white @ X                   # (n_comp, T)
+    W_white = D @ vecs_sub.T
+    Z = W_white @ X
 
-    # 单时延协方差，对称化后特征分解
     R_lag = Z[:, lag:] @ Z[:, :-lag].T / (T - lag)
     R_sym = (R_lag + R_lag.T) / 2
     _, V_mat = eigh(R_sym)
-    # 按特征值绝对值降序排列
     order = np.argsort(np.abs(np.linalg.eigvalsh(R_sym)))[::-1]
-    V = V_mat[:, order]               # (n_comp, n_comp) 正交旋转矩阵
+    V = V_mat[:, order]
 
     S = V.T @ Z
     return V, vecs_sub, D, S
 
 
 def build_ica_from_amuse(raw_fit, picks, n_comp, lag=1):
-    """用 AMUSE 结果构造 MNE ICA 对象"""
     data = raw_fit.get_data(picks=picks)
     V, vecs_sub, D, _ = amuse_numpy(data, n_comp, lag)
     ica = ICA(n_components=n_comp, method='fastica', random_state=42, verbose=False)
@@ -143,26 +86,22 @@ def build_ica_from_amuse(raw_fit, picks, n_comp, lag=1):
 
 
 def sobi_numpy(X, n_comp, n_lags=100):
-    """SOBI ICA，利用多时延协方差联合对角化，返回 (V, vecs_sub, D, S)，X: (n_chan, n_times)"""
     from scipy.linalg import eigh
     _, T = X.shape
-    # 白化
     cov = X @ X.T / T
     vals, vecs = eigh(cov)
     idx = np.argsort(vals)[::-1][:n_comp]
     D = np.diag(1.0 / np.sqrt(vals[idx]))
     vecs_sub = vecs[:, idx]
-    W_white = D @ vecs_sub.T          # (n_comp, n_chan)
-    Z = W_white @ X                   # (n_comp, T)
+    W_white = D @ vecs_sub.T
+    Z = W_white @ X
 
-    # 构建多时延协方差矩阵集合
     lags = np.arange(1, n_lags + 1)
     Rs = []
     for lag in lags:
         R = Z[:, lag:] @ Z[:, :-lag].T / (T - lag)
-        Rs.append((R + R.T) / 2)     # 对称化
+        Rs.append((R + R.T) / 2)
 
-    # Jacobi 联合对角化
     V = np.eye(n_comp)
     for _ in range(200):
         for p in range(n_comp - 1):
@@ -182,7 +121,6 @@ def sobi_numpy(X, n_comp, n_lags=100):
 
 
 def build_ica_from_sobi(raw_fit, picks, n_comp, n_lags=100):
-    """用 SOBI 结果构造 MNE ICA 对象"""
     data = raw_fit.get_data(picks=picks)
     V, vecs_sub, D, _ = sobi_numpy(data, n_comp, n_lags)
     ica = ICA(n_components=n_comp, method='fastica', random_state=42, verbose=False)
@@ -197,19 +135,16 @@ def build_ica_from_sobi(raw_fit, picks, n_comp, n_lags=100):
 
 
 def jade_numpy(X, n_comp):
-    """JADE ICA，返回 (V, vecs_sub, D, S)，X: (n_chan, n_times)"""
     from scipy.linalg import eigh
     _, T = X.shape
-    # 白化
     cov = X @ X.T / T
     vals, vecs = eigh(cov)
     idx = np.argsort(vals)[::-1][:n_comp]
     D = np.diag(1.0 / np.sqrt(vals[idx]))
-    vecs_sub = vecs[:, idx]          # (n_chan, n_comp) 正交特征向量
-    W_white = D @ vecs_sub.T         # (n_comp, n_chan)
-    Z = W_white @ X  # (n_comp, T)
+    vecs_sub = vecs[:, idx]
+    W_white = D @ vecs_sub.T
+    Z = W_white @ X
 
-    # 四阶累积量张量对角化
     CM = np.zeros((n_comp, n_comp * n_comp))
     for p in range(n_comp):
         for q in range(n_comp):
@@ -218,7 +153,6 @@ def jade_numpy(X, n_comp):
             cum -= np.eye(n_comp) * (zp @ zq.T / T)
             CM[:, p * n_comp + q] = cum[:, p]
 
-    # Jacobi 旋转对角化
     V = np.eye(n_comp)
     for _ in range(100):
         for p in range(n_comp - 1):
@@ -241,26 +175,33 @@ def jade_numpy(X, n_comp):
 
 
 def build_ica_from_jade(raw_fit, picks, n_comp):
-    """用 JADE 结果构造 MNE ICA 对象"""
     data = raw_fit.get_data(picks=picks)
     V, vecs_sub, D, _ = jade_numpy(data, n_comp)
     ica = ICA(n_components=n_comp, method='fastica', random_state=42, verbose=False)
-    ica.fit(raw_fit, picks=picks, verbose=False)  # 先用 fastica 初始化结构
-    # pca_components_ 必须行正交归一，只存特征向量；缩放 D 并入 unmixing
-    D_inv = np.diag(np.sqrt(np.diag(np.linalg.inv(D @ D))))  # diag(sqrt(eigenvalues))
-    ica.pca_components_  = vecs_sub.T          # (n_comp, n_chan) 正交归一
-    ica.unmixing_matrix_ = V.T @ D             # (n_comp, n_comp)
-    ica.mixing_matrix_   = D_inv @ V           # (n_comp, n_comp) = inv(V.T @ D)
+    ica.fit(raw_fit, picks=picks, verbose=False)
+    D_inv = np.diag(np.sqrt(np.diag(np.linalg.inv(D @ D))))
+    ica.pca_components_  = vecs_sub.T
+    ica.unmixing_matrix_ = V.T @ D
+    ica.mixing_matrix_   = D_inv @ V
     ica.pca_mean_        = data.mean(axis=1)
     ica.pre_whitener_    = np.ones((len(picks), 1))
     return ica
 
 
-# %% 读取数据，计算去噪前基线print("读取原始数据...")
-raw = read_meg_data(DATA_PATH, SENSOR_PATH)
+# %% 读取数据（只处理第一个 FIF 文件）
+fif_files = sorted(glob.glob(os.path.join(DATA_DIR, "*", "*.fif")))
+print(f"找到 {len(fif_files)} 个 .fif 文件")
+if not fif_files:
+    raise FileNotFoundError(f"未找到 FIF 文件: {DATA_DIR}")
 
+fif_path = fif_files[0]
+subj_name = os.path.splitext(os.path.basename(fif_path))[0]
+print(f"使用: {fif_path}")
+
+raw = mne.io.read_raw_fif(fif_path, preload=True, verbose=False)
+
+# 去噪前基线：FIF 已预处理，直接 copy，不再做 1.5–40 Hz 滤波
 raw_before = raw.copy()
-raw_before.filter(1.0, 40.0, picks='meg', verbose=False)
 _, evoked_before = build_epochs_and_evoked(raw_before, TMIN, TMAX, BASELINE, REJECT)
 snr_lin_before, snr_db_before, noise_rms_before = compute_snr_from_evoked(evoked_before)
 print(f"SNR before: {snr_lin_before:.4f} ({snr_db_before:.2f} dB)\n")
@@ -277,19 +218,19 @@ for method in METHODS:
     print(f"=== {method.upper()} ===")
     if method == 'jade':
         try:
-            ica = build_ica_from_jade(raw_before, picks_mag, n_comp)
+            ica = build_ica_from_jade(raw_ica_fit, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
     elif method == 'sobi':
         try:
-            ica = build_ica_from_sobi(raw_before, picks_mag, n_comp)
+            ica = build_ica_from_sobi(raw_ica_fit, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
     elif method == 'amuse':
         try:
-            ica = build_ica_from_amuse(raw_before, picks_mag, n_comp)
+            ica = build_ica_from_amuse(raw_ica_fit, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
@@ -298,7 +239,7 @@ for method in METHODS:
         ica = ICA(n_components=n_comp, method=method,
                   fit_params=fit_params, random_state=RANDOM_STATE, verbose=False)
         try:
-            ica.fit(raw_before, picks=picks_mag, verbose=False)
+            ica.fit(raw_ica_fit, picks=picks_mag, verbose=False)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
@@ -307,7 +248,7 @@ for method in METHODS:
     matplotlib.use('TkAgg')
     ica.plot_components(picks=range(n_comp), show=True)
     plt.show(block=True)
-    ica.plot_sources(raw_before, show=True, block=True)
+    ica.plot_sources(raw_ica_fit, show=True, block=True)
     exclude = ica.exclude[:]
     matplotlib.use('Agg')
     print(f"  排除成分: {exclude}")
@@ -323,7 +264,7 @@ for method in METHODS:
     results[method] = dict(snr_lin=snr_lin, snr_db=snr_db,
                            delta_snr_db=snr_db - snr_db_before,
                            sf_linear=sf_linear, sf_db=sf_db,
-                           n_excluded=len(exclude), excluded_components=exclude)
+                           n_excluded=len(exclude))
     evokeds[method] = evoked_after
 
 
@@ -353,7 +294,7 @@ for ax, (key, title) in zip(axes, plot_items):
     ax.axvspan(BASELINE[0], BASELINE[1], alpha=0.1, color='blue')
     ax.grid(True, alpha=0.3)
 
-fig.suptitle('听觉 MEG — ICA 方法对比', fontsize=13)
+fig.suptitle('触觉 MEG — ICA 方法对比', fontsize=13)
 plt.tight_layout()
 out_path = os.path.join(OUTPUT_DIR, 'ica_compare_evoked.png')
 fig.savefig(out_path, dpi=300, bbox_inches='tight')

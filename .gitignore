@@ -11,3 +11,4 @@ vision/ica*
 vision/*.basedata
 vision/*.mat
 touch/batch*
+touch/conference
