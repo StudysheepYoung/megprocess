@@ -218,19 +218,19 @@ for method in METHODS:
     print(f"=== {method.upper()} ===")
     if method == 'jade':
         try:
-            ica = build_ica_from_jade(raw_ica_fit, picks_mag, n_comp)
+            ica = build_ica_from_jade(raw_before, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
     elif method == 'sobi':
         try:
-            ica = build_ica_from_sobi(raw_ica_fit, picks_mag, n_comp)
+            ica = build_ica_from_sobi(raw_before, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
     elif method == 'amuse':
         try:
-            ica = build_ica_from_amuse(raw_ica_fit, picks_mag, n_comp)
+            ica = build_ica_from_amuse(raw_before, picks_mag, n_comp)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
@@ -239,7 +239,7 @@ for method in METHODS:
         ica = ICA(n_components=n_comp, method=method,
                   fit_params=fit_params, random_state=RANDOM_STATE, verbose=False)
         try:
-            ica.fit(raw_ica_fit, picks=picks_mag, verbose=False)
+            ica.fit(raw_before, picks=picks_mag, verbose=False)
         except Exception as e:
             print(f"  拟合失败: {e}")
             continue
@@ -248,7 +248,7 @@ for method in METHODS:
     matplotlib.use('TkAgg')
     ica.plot_components(picks=range(n_comp), show=True)
     plt.show(block=True)
-    ica.plot_sources(raw_ica_fit, show=True, block=True)
+    ica.plot_sources(raw_before, show=True, block=True)
     exclude = ica.exclude[:]
     matplotlib.use('Agg')
     print(f"  排除成分: {exclude}")

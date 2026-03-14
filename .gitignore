@@ -12,3 +12,5 @@ vision/*.basedata
 vision/*.mat
 touch/batch*
 touch/conference
+touch/ica*
+EEGdenoiseNet
