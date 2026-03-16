@@ -257,8 +257,12 @@ for method in METHODS:
     ica.apply(raw_after, verbose=False)
     _, evoked_after = build_epochs_and_evoked(raw_after, TMIN, TMAX, BASELINE, REJECT)
     snr_lin, snr_db, noise_rms_after = compute_snr_from_evoked(evoked_after)
-    sf_linear = noise_rms_before / noise_rms_after if noise_rms_after > 0 else np.nan
-    sf_db = 20 * np.log10(sf_linear) if sf_linear > 0 else np.nan
+    picks_ev = mne.pick_types(evoked_before.info, meg=True, exclude='bads')
+    data_before = evoked_before.data[picks_ev]
+    data_after  = evoked_after.data[picks_ev]
+    removed = data_before - data_after
+    sf_linear = np.mean(removed**2) / np.mean(data_before**2) if np.mean(data_before**2) > 0 else np.nan
+    sf_db = 10 * np.log10(sf_linear) if sf_linear > 0 else np.nan
 
     print(f"  SNR after : {snr_lin:.4f} ({snr_db:.2f} dB)  |  Delta SNR: {snr_db - snr_db_before:+.2f} dB  |  SF: {sf_linear:.4f} ({sf_db:.2f} dB)")
     results[method] = dict(snr_lin=snr_lin, snr_db=snr_db,
